@@ -1285,7 +1285,7 @@ const HDR = {
   product:      ['物料名称', '存货名称', '商品名称', '商品', '物料', '产品名称', '存货'],
   spec:         ['规格', '规格型号'],
   qty:          ['数量', '数量合计', '销量合计', '销量'],
-  unit:         ['单位'],
+  unit:         ['单位', '统计单位'],
   mainQty:      ['主数量', '成成主数量', '折主数量', '换算主数量', '可出库主数量'],
   mainUnit:     ['主单位'],
   warehouse:    ['发货仓库', '仓库', '库存组织'],
@@ -1357,19 +1357,25 @@ function findHeader(rows) {
 function classify(idx, rows, sheetName, fileName) {
   const has = k => idx[k] !== undefined;
 
-  // 优先级：业务员 + 客户 = 销售明细
+  // 优先级 1：业务员 + 客户 = 销售明细
   if (has('sales') && has('customer') && has('product')) return 'sales';
 
-  // 现存量：仓库列 + 没有 customer/sales；或文件/表名包含「现存量」
-  const fnameLower = (fileName || '').toLowerCase();
-  const snameLower = (sheetName || '').toLowerCase();
-  const isStockByName = /现存/.test(fnameLower) || /现存/.test(snameLower);
-  if (isStockByName && has('product')) return 'stock';
-  // 现存量表特征：有合计列但没有「金额」「销量」列
+  // 优先级 2：文件名 / 工作表名判定（最可靠，防止结构相似的不同表互相误判）
+  // 「商品销售汇总」带仓库子列，会被误判为购进；「商品购进汇总表」带合计列，会被误判为现存量
+  const name = (sheetName || '') + ' ' + (fileName || '');
+  if (has('product')) {
+    if (/现存/.test(name)) return 'stock';
+    if (/购进/.test(name) && !/销售/.test(name)) return 'purchase';
+    if (/销售汇总/.test(name) && !/明细|业务员/.test(name)) return 'salesSummary';
+    if (/明细|业务员/.test(name)) return 'sales';
+  }
+
+  // 优先级 3：特征判定
+  // 现存量表特征：有合计列但没有「金额」「销量」列（表名未含「购进」时）
   if (has('product') && has('wh_total') && !has('amount') && !has('qty')) return 'stock';
 
-  // 购进：有仓库列（wh1/wh2/wh3）+ 没有客户/业务员
-  if ((has('wh1') || has('wh2') || has('wh3')) && has('product') && !has('customer') && !has('sales')) return 'purchase';
+  // 购进：有仓库列（wh1/wh2/wh3）+ 没有客户/业务员/金额（销售汇总表因带「金额合计」列而排除）
+  if ((has('wh1') || has('wh2') || has('wh3')) && has('product') && !has('customer') && !has('sales') && !has('amount')) return 'purchase';
   if (has('product') && has('qty') && !has('customer') && !has('sales') && !has('amount')) return 'purchase';
 
   // 销售汇总：有 product + amount（且没有 sales/customer）
