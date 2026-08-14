@@ -201,9 +201,15 @@ async function cloudPut(roomId, payload) {
         }
       }
     }
-    console.error('cloudPut failed:', r.status, await r.text().catch(() => ''));
+    const errBody = await r.text().catch(() => '');
+    console.error('cloudPut failed:', r.status, errBody);
+    window.__lastSyncError = 'HTTP ' + r.status + ': ' + errBody.slice(0, 300);
     return false;
-  } catch (e) { console.error('cloudPut error', e); return false; }
+  } catch (e) {
+    console.error('cloudPut error', e);
+    window.__lastSyncError = e.message || String(e);
+    return false;
+  }
 }
 
 /* 创建新房间（在仓库 _cloud/ 目录创建新 JSON 文件），返回 Room ID */
@@ -225,9 +231,15 @@ async function cloudCreateRoom(name, payload) {
       if (j.content && j.content.sha) setSha(roomId, j.content.sha);
       return roomId;
     }
-    console.error('cloudCreateRoom failed:', r.status, await r.text().catch(() => ''));
+    const errBody = await r.text().catch(() => '');
+    console.error('cloudCreateRoom failed:', r.status, errBody);
+    window.__lastSyncError = 'HTTP ' + r.status + ': ' + errBody.slice(0, 300);
     return null;
-  } catch (e) { console.error('cloudCreateRoom error', e); return null; }
+  } catch (e) {
+    console.error('cloudCreateRoom error', e);
+    window.__lastSyncError = e.message || String(e);
+    return null;
+  }
 }
 
 /* 删除房间数据文件 */
@@ -298,11 +310,12 @@ async function push(silent) {
       broadcastSync();
       return true;
     }
-    throw new Error('cloudPut returned false');
+    throw new Error(window.__lastSyncError || 'cloudPut returned false');
   } catch (e) {
     setBadge('上传失败', 'err');
-    log('#syncLog', '✘ 上传失败：' + (e.message || '未知错误') + ' · 数据已保存到本机', 'err');
-    if (!silent) toast('上传失败：' + (e.message || '请检查 Token 权限和网络') + '，数据已保存到本机', 'err');
+    const errMsg = e.message || '未知错误';
+    log('#syncLog', '✘ 上传失败：' + errMsg + ' · 数据已保存到本机', 'err');
+    if (!silent) toast('上传失败：' + errMsg, 'err');
     return false;
   }
 }
@@ -438,7 +451,9 @@ async function createRoom() {
   toast('正在创建云端房间…');
   const roomId = await cloudCreateRoom(name, S.data);
   if (!roomId) {
-    toast('创建房间失败，请检查 Token 权限（需 repo 范围）', 'err');
+    const errMsg = window.__lastSyncError || '未知错误';
+    toast('创建房间失败：' + errMsg, 'err');
+    log('#syncLog', '✘ 创建房间失败：' + errMsg, 'err');
     return;
   }
   const rooms = loadRooms();
@@ -480,6 +495,109 @@ async function copyRoomId(id) {
     try { document.execCommand('copy'); toast('房间 ID 已复制', 'ok'); } catch (e2) { toast('复制失败，请手动复制', 'err'); }
     document.body.removeChild(ta);
   }
+}
+
+/* 同步诊断 */
+async function runDiag() {
+  const box = document.getElementById('diagResult');
+  if (!box) return;
+  box.innerHTML = '<div style="font-size:13px;color:#8b949e">正在诊断…</div>';
+  const lines = [];
+  const tk = getToken();
+  lines.push('1. Token 状态: ' + (tk ? '✓ 已设置 (' + tk.slice(0, 8) + '...' + tk.slice(-4) + ')' : '✘ 未设置'));
+  lines.push('2. 仓库信息: ' + (REPO_INFO ? '✓ ' + REPO_INFO.owner + '/' + REPO_INFO.repo : '✘ 未识别（URL: ' + location.href + '）'));
+  lines.push('3. 当前房间: ' + (getRoomId() || '无'));
+  lines.push('4. 页面 URL: ' + location.href);
+
+  if (!tk) {
+    lines.push('\n❌ 问题：Token 未设置！');
+    lines.push('解决：在上方输入框中输入 GitHub Token，然后点击「保存 Token」');
+    box.innerHTML = '<div style="font-size:13px;background:#0d1117;padding:12px;border-radius:6px;border:1px solid #30363d;white-space:pre-wrap;color:#f85149">' + esc(lines.join('\n')) + '</div>';
+    return;
+  }
+
+  // Test API connectivity
+  lines.push('\n--- 正在测试 GitHub API 连通性 ---');
+  box.innerHTML = '<div style="font-size:13px;background:#0d1117;padding:12px;border-radius:6px;border:1px solid #30363d;white-space:pre-wrap;color:#79c0ff">' + esc(lines.join('\n')) + '</div>';
+
+  try {
+    const r = await fetch(GITHUB_API + '/user', {
+      headers: _ghHeaders()
+    });
+    lines.push('5. API /user: HTTP ' + r.status);
+    if (r.ok) {
+      const u = await r.json();
+      lines.push('   用户: ' + u.login);
+      const scopes = r.headers.get('X-OAuth-Scopes') || '(none)';
+      lines.push('   权限: ' + scopes);
+      if (!scopes.includes('repo')) {
+        lines.push('   ❌ 缺少 repo 权限！');
+      }
+    } else {
+      const body = await r.text();
+      lines.push('   ❌ 失败: ' + body.slice(0, 200));
+    }
+  } catch (e) {
+    lines.push('5. ❌ 网络错误: ' + e.message);
+    lines.push('   可能是 CORS 或网络问题');
+  }
+
+  // Test repo access
+  if (REPO_INFO) {
+    try {
+      const r = await fetch(GITHUB_API + '/repos/' + REPO_INFO.owner + '/' + REPO_INFO.repo, {
+        headers: _ghHeaders()
+      });
+      lines.push('6. 仓库访问: HTTP ' + r.status);
+      if (r.ok) {
+        const repo = await r.json();
+        lines.push('   写权限: ' + (repo.permissions && repo.permissions.push ? '✓' : '✘'));
+      } else {
+        const body = await r.text();
+        lines.push('   ❌ 失败: ' + body.slice(0, 200));
+      }
+    } catch (e) {
+      lines.push('6. ❌ 网络错误: ' + e.message);
+    }
+  }
+
+  // Test Contents API write
+  try {
+    const testPayload = { diag: true, ts: Date.now() };
+    const b64 = _b64encode(JSON.stringify(testPayload));
+    const r = await fetch(GITHUB_API + '/repos/' + REPO_INFO.owner + '/' + REPO_INFO.repo + '/contents/_cloud/diag-test.json', {
+      method: 'PUT',
+      headers: _ghHeaders(),
+      body: JSON.stringify({ message: 'INMS diag test', content: b64 })
+    });
+    lines.push('7. Contents API 写入: HTTP ' + r.status);
+    if (r.ok) {
+      const j = await r.json();
+      lines.push('   ✓ 写入成功！sha=' + (j.content && j.content.sha || '').slice(0, 12));
+      // Cleanup
+      if (j.content && j.content.sha) {
+        await fetch(GITHUB_API + '/repos/' + REPO_INFO.owner + '/' + REPO_INFO.repo + '/contents/_cloud/diag-test.json', {
+          method: 'DELETE',
+          headers: _ghHeaders(),
+          body: JSON.stringify({ message: 'cleanup', sha: j.content.sha })
+        });
+        lines.push('   ✓ 已清理测试文件');
+      }
+    } else {
+      const body = await r.text();
+      lines.push('   ❌ 失败: ' + body.slice(0, 300));
+    }
+  } catch (e) {
+    lines.push('7. ❌ 异常: ' + e.message);
+  }
+
+  if (window.__lastSyncError) {
+    lines.push('\n上次同步错误: ' + window.__lastSyncError);
+  }
+
+  lines.push('\n诊断完成。如有 ❌ 项，请根据提示修正。');
+  const hasErr = lines.some(l => l.includes('❌'));
+  box.innerHTML = '<div style="font-size:13px;background:#0d1117;padding:12px;border-radius:6px;border:1px solid ' + (hasErr ? '#f85149' : '#238636') + ';white-space:pre-wrap;color:' + (hasErr ? '#f85149' : '#3fb950') + '">' + esc(lines.join('\n')) + '</div>';
 }
 
 async function deleteRoom(id) {
@@ -1606,10 +1724,31 @@ function bind() {
 
   // 关闭对话框：点击遮罩
   $('#roomDlg').addEventListener('click', e => { if (e.target.id === 'roomDlg') hideRoomDialog(); });
+  // 诊断按钮
+  const btnDiag = document.getElementById('btnDiag');
+  if (btnDiag) btnDiag.onclick = runDiag;
 }
 
 (async function init() {
-  bind();
+  // 支持 URL 参数自动配置 Token: ?token=ghp_xxx
+  try {
+    const params = new URLSearchParams(location.search);
+    const urlToken = params.get('token');
+    if (urlToken && urlToken.length > 10) {
+      setToken(urlToken);
+      console.log('✓ Token 已从 URL 参数自动配置');
+      // 清除 URL 中的 token 参数（安全考虑）
+      const cleanUrl = location.pathname + location.hash;
+      history.replaceState(null, '', cleanUrl);
+    }
+  } catch (e) { }
+
+  try {
+    bind();
+  } catch (e) {
+    console.error('bind() error:', e);
+    // 即使 bind 部分失败也继续初始化
+  }
   try {
     const c = localStorage.getItem(LS);
     if (c) { const j = JSON.parse(c); if (j && j.periods && Object.keys(j.periods).length) S.data = j; }
