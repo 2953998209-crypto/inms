@@ -1,0 +1,8 @@
+{
+  "name": "inms-optimized",
+  "version": "2.0.0",
+  "description": "库存进销存智能管理看板系统 - 多端云同步版",
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0"
+  }
+}

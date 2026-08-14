@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="description" content="库存进销存智能管理看板系统 - 多端实时同步，云端稳定存储">
+<title>库存进销存智能管理看板系统 · 多端云同步版</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+<script src="lib/chart.min.js"></script>
+<script src="lib/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="loader"><div class="spin"></div><p>正在加载数据…</p></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📦</span>
+    <div>
+      <h1>库存进销存智能管理看板</h1>
+      <small id="orgName">湖北盐业集团有限公司荆州分公司</small>
+    </div>
+  </div>
+  <div class="topctl">
+    <select id="periodSel" title="统计期间"></select>
+    <span id="roomBadge" class="badge" title="点击右侧房间按钮管理">🏠 未加入房间</span>
+    <span id="syncBadge" class="badge">离线</span>
+    <button id="btnRoom" class="btn ghost" title="房间管理（创建或加入房间可实现多端实时同步）">🏠 房间</button>
+    <button id="btnSync" class="btn ghost" title="立即与云端同步">⟳ 同步</button>
+  </div>
+</header>
+
+<!-- 房间管理对话框 -->
+<div id="roomDlg" class="dlg-mask" style="display:none">
+  <div class="dlg">
+    <div class="dlg-head"><h3>🏠 房间同步 · 多端共享（GitHub Gist）</h3><button id="btnRoomClose" class="btn ghost">✕</button></div>
+    <p class="note" style="padding:12px 18px 0" id="roomMeta">当前房间：未加入（仅本机保存）</p>
+    <div class="dlg-body">
+      <!-- GitHub Token 设置 -->
+      <h4>🔑 GitHub Token（多端同步必需，仅存本机不上传）</h4>
+      <div class="filters">
+        <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx（需 gist 权限）" style="flex:1;min-width:200px;font-family:monospace">
+        <button class="btn" id="btnSaveToken">保存 Token</button>
+      </div>
+      <p class="note" style="font-size:12px;margin:4px 0 8px">
+        💡 获取方式：GitHub → Settings → Developer settings → Personal access tokens → Generate new token (classic) → 勾选 <b>gist</b> 范围 → 生成。
+        Token 仅保存在浏览器 localStorage，不会上传到任何服务器。
+      </p>
+      <h4>➕ 创建新房间（手机电脑共享数据请先创建）</h4>
+      <div class="filters">
+        <input type="text" id="newRoomName" placeholder="房间名称（如：荆州盐业-销售部）" style="flex:1;min-width:200px">
+        <button class="btn" id="btnCreateRoom">创建并加入</button>
+      </div>
+      <h4>🔗 加入已有房间（输入其他人分享的 Gist ID）</h4>
+      <div class="filters">
+        <input type="text" id="joinRoomId" placeholder="粘贴房间 ID（32位 Gist ID）" style="flex:1;min-width:200px;font-family:monospace">
+        <button class="btn ghost" id="btnJoinRoom">加入</button>
+      </div>
+      <h4>📋 我的房间</h4>
+      <div id="roomList" class="room-list"></div>
+      <div class="filters" style="margin-top:14px">
+        <button class="btn danger" id="btnLeaveRoom">🚪 退出当前房间</button>
+      </div>
+      <p class="note" style="margin-top:14px;font-size:12px">💡 同一房间的手机和电脑访问本系统会实时同步数据。云端使用 <b>GitHub Gist API</b> 稳定存储（Secret Gist，仅自己可见），离线时使用本机缓存，联网后点击「⟳ 同步」即可上传/拉取。每个房间独立隔离。</p>
+    </div>
+  </div>
+</div>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="overview" class="on">总览</button>
+  <button data-tab="stock">库存管理</button>
+  <button data-tab="sales">销售汇总</button>
+  <button data-tab="staff">业务员分析</button>
+  <button data-tab="forecast">预测分析</button>
+  <button data-tab="year">年度汇总</button>
+  <button data-tab="upload">📤 数据上传</button>
+</nav>
+
+<main>
+<!-- ============ 总览 ============ -->
+<section id="tab-overview" class="tab on">
+  <div class="filters" style="margin-bottom:14px">
+    <label>筛选产品分类
+      <select id="ovCat"><option value="">全部分类</option></select>
+    </label>
+    <label>排序
+      <select id="ovSort">
+        <option value="qty">按销量</option>
+        <option value="stock">按库存</option>
+        <option value="cat">按分类</option>
+      </select>
+    </label>
+    <button class="btn ghost" id="expOv">⬇ 导出CSV</button>
+  </div>
+  <div class="kpis" id="kpis"></div>
+  <div class="grid2">
+    <div class="card"><h3>各品类销量占比</h3><div class="cbox"><canvas id="chCatPie"></canvas></div></div>
+    <div class="card"><h3>品类进销存对比（主数量）</h3><div class="cbox"><canvas id="chPSI"></canvas></div></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>每日销量趋势（金额作参考）</h3><div class="cbox"><canvas id="chDaily"></canvas></div></div>
+    <div class="card"><h3>业务员销量排名</h3><div class="cbox"><canvas id="chStaff"></canvas></div></div>
+  </div>
+  <div class="card">
+    <h3>库存预警 <span class="tag" id="warnCount">0</span></h3>
+    <div class="filters">
+      <label>分类 <select id="warnCat"><option value="">全部分类</option></select></label>
+    </div>
+    <div class="tblwrap"><table id="tbWarnTop"></table></div>
+  </div>
+</section>
+
+<!-- ============ 库存管理 ============ -->
+<section id="tab-stock" class="tab">
+  <div class="card">
+    <h3>库存预警设置</h3>
+    <div class="filters">
+      <label>周转天数阈值 <input type="number" id="warnDays" value="30" min="1" step="1"></label>
+      <label>零库存有销售 <input type="checkbox" id="warnZero" checked></label>
+      <label>呆滞（无销售）天数 <input type="number" id="warnDead" value="0" min="0" step="1" title="0=只要本期无销售即视为呆滞"></label>
+      <button class="btn" id="btnRecalc">重新计算</button>
+    </div>
+    <div class="legend">
+      <span class="pill p-red">断货/缺货</span><span class="pill p-org">低于安全库存</span>
+      <span class="pill p-grn">正常</span><span class="pill p-gry">呆滞积压</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>库存产品台账（购进 / 销售 / 现存 / 预警）</h3>
+    <div class="filters">
+      <input id="stkSearch" placeholder="🔍 搜索商品名称 / 仓库 / 分类">
+      <select id="stkWh"><option value="">全部仓库</option></select>
+      <select id="stkCat"><option value="">全部分类</option></select>
+      <select id="stkStatus"><option value="">全部状态</option><option>断货/缺货</option><option>低于安全库存</option><option>正常</option><option>呆滞积压</option></select>
+      <button class="btn ghost" id="expStock">⬇ 导出CSV</button>
+    </div>
+    <div class="tblwrap"><table id="tbStock"></table></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>库存数量变化（期初→购进→销售→现存）Top15</h3><div class="cbox tall"><canvas id="chStockFlow"></canvas></div></div>
+    <div class="card"><h3>各仓库库存分布</h3><div class="cbox tall"><canvas id="chWh"></canvas></div></div>
+  </div>
+</section>
+
+<!-- ============ 销售汇总 ============ -->
+<section id="tab-sales" class="tab">
+  <div class="kpis" id="kpisSales"></div>
+  <div class="grid2">
+    <div class="card"><h3>品类销量排名</h3><div class="cbox"><canvas id="chSalesCat"></canvas></div></div>
+    <div class="card"><h3>单品销量 Top10</h3><div class="cbox"><canvas id="chSalesTop"></canvas></div></div>
+  </div>
+  <div class="card">
+    <h3>商品销售总汇总</h3>
+    <div class="filters">
+      <input id="sumSearch" placeholder="🔍 搜索商品 / 分类">
+      <select id="sumCat"><option value="">全部分类</option></select>
+      <select id="sumCatSrc"><option value="">全部来源</option><option value="image">图片分类</option><option value="original">原表分类</option><option value="fallback">自动分类</option></select>
+      <button class="btn ghost" id="expSum">⬇ 导出CSV</button>
+    </div>
+    <div class="tblwrap"><table id="tbSalesSum"></table></div>
+  </div>
+  <div class="card">
+    <h3>客户销售排行</h3>
+    <div class="filters">
+      <select id="custCat"><option value="">全部分类</option></select>
+    </div>
+    <div class="tblwrap"><table id="tbCust"></table></div>
+  </div>
+</section>
+
+<!-- ============ 业务员分析 ============ -->
+<section id="tab-staff" class="tab">
+  <div class="card">
+    <h3>筛选条件</h3>
+    <div class="filters">
+      <select id="fStaff"><option value="">全部业务员</option></select>
+      <select id="fProd"><option value="">全部产品</option></select>
+      <select id="fCat"><option value="">全部分类</option></select>
+      <select id="fCust"><option value="">全部客户</option></select>
+      <input type="date" id="fFrom"><span class="to">至</span><input type="date" id="fTo">
+      <button class="btn" id="btnFilter">查询</button>
+      <button class="btn ghost" id="btnReset">重置</button>
+      <button class="btn ghost" id="expStaff">⬇ 导出台账CSV</button>
+    </div>
+  </div>
+  <div class="kpis" id="kpisStaff"></div>
+  <div class="grid2">
+    <div class="card"><h3>业务员销量排名</h3><div class="cbox"><canvas id="chStaffAmt"></canvas></div></div>
+    <div class="card"><h3>各产品销量构成</h3><div class="cbox"><canvas id="chStaffProd"></canvas></div></div>
+  </div>
+  <div class="card"><h3>每日销量走势</h3><div class="cbox"><canvas id="chStaffDaily"></canvas></div></div>
+  <div class="grid2">
+    <div class="card"><h3>业务员 × 产品 销量矩阵</h3><div class="tblwrap"><table id="tbMatrix"></table></div></div>
+    <div class="card"><h3>每日对应客户销售</h3><div class="tblwrap"><table id="tbDayCust"></table></div></div>
+  </div>
+  <div class="card">
+    <h3>业务员销售台账明细 <span class="tag" id="ledgerCount">0</span></h3>
+    <div class="tblwrap scroll"><table id="tbLedger"></table></div>
+  </div>
+</section>
+
+<!-- ============ 预测分析 ============ -->
+<section id="tab-forecast" class="tab">
+  <div class="card">
+    <h3>预测参数</h3>
+    <div class="filters">
+      <label>预测方法
+        <select id="fcMethod">
+          <option value="auto">智能（多月移动平均+趋势，单月用基准）</option>
+          <option value="ma">移动平均</option>
+          <option value="trend">线性趋势外推</option>
+          <option value="flat">同期持平</option>
+        </select>
+      </label>
+      <label>增长系数 <input type="number" id="fcGrow" value="1.00" step="0.01"></label>
+      <button class="btn" id="btnForecast">生成预测</button>
+    </div>
+    <p class="note" id="fcNote"></p>
+  </div>
+  <div class="kpis" id="kpisFc"></div>
+  <div class="card"><h3>下月销量预测 vs 本期实际（金额参考）</h3><div class="cbox tall"><canvas id="chFc"></canvas></div></div>
+  <div class="card">
+    <h3>依据现存量的备货建议</h3>
+    <div class="filters">
+      <select id="fcCat"><option value="">全部分类</option></select>
+      <button class="btn ghost" id="expFc">⬇ 导出建议CSV</button>
+    </div>
+    <div class="tblwrap"><table id="tbFc"></table></div>
+  </div>
+  <div class="card"><h3>业务员业绩预测</h3><div class="tblwrap"><table id="tbFcStaff"></table></div></div>
+</section>
+
+<!-- ============ 年度汇总 ============ -->
+<section id="tab-year" class="tab">
+  <div class="kpis" id="kpisYear"></div>
+  <div class="card">
+    <h3>已录入期间 <span class="tag" id="periodCount">0</span></h3>
+    <div class="tblwrap"><table id="tbPeriods"></table></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>月度销量走势（金额参考）</h3><div class="cbox"><canvas id="chYearTrend"></canvas></div></div>
+    <div class="card"><h3>年度品类销量结构</h3><div class="cbox"><canvas id="chYearCat"></canvas></div></div>
+  </div>
+  <div class="card">
+    <h3>年度商品销量分析</h3>
+    <div class="filters">
+      <select id="yearCat"><option value="">全部分类</option></select>
+      <button class="btn ghost" id="expYear">⬇ 导出CSV</button>
+    </div>
+    <div class="tblwrap"><table id="tbYearProd"></table></div>
+  </div>
+  <div class="card"><h3>年度业务员业绩汇总</h3><div class="tblwrap"><table id="tbYearStaff"></table></div></div>
+</section>
+
+<!-- ============ 数据上传 ============ -->
+<section id="tab-upload" class="tab">
+  <div class="card">
+    <h3>智能数据上传（云端同步）</h3>
+    <p class="note">
+      支持 <b>.xlsx / .xls / .csv</b>。系统可识别以下 4 种格式并自动归类到对应模块：
+      <ol style="margin:8px 0 8px 22px;line-height:1.9">
+        <li><b>📦 购进模块</b>：如「1月商品购进汇总表」（物料分类 + 物料名称 + 统计单位 + 各仓库数量 + 合计）</li>
+        <li><b>💰 销售模块</b>：如「1月商品销售汇总」（物料分类 + 物料 + 销量 + 金额）</li>
+        <li><b>👤 业务员明细模块</b>：如「1月销售数据_业务员明细」（每张工作表对应一个业务员）</li>
+        <li><b>📊 库存现存量模块</b>：如「现存量汇总表」（作为下月期初量）</li>
+      </ol>
+      可一次选择多个文件。导入后自动按图片中 17 类产品分类法（云鹤、雪砂、九凤来等）智能归类。
+    </p>
+    <div class="drop" id="drop">
+      <div class="dropinner">
+        <div class="dicon">⬆</div>
+        <p><b>点击选择文件</b> 或将文件拖拽到此处</p>
+        <small>支持 Excel/CSV · 手机端可直接选取微信/QQ保存的表格</small>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv">
+    </div>
+    <div class="filters">
+      <label>归属期间 <input type="month" id="upPeriod"></label>
+      <label>导入模式
+        <select id="upMode"><option value="merge">追加合并（同期间累加）</option><option value="replace">覆盖该期间</option></select>
+      </label>
+      <button class="btn" id="btnCommit" disabled>✔ 确认导入并同步到云端</button>
+    </div>
+    <div id="parseLog" class="log"></div>
+  </div>
+  <div class="card">
+    <h3>多端实时同步（房间机制）</h3>
+    <p class="note">
+      点击右上角「🏠 房间」<b>创建或加入</b>一个房间；同一房间的<b>手机与电脑</b>访问本系统会<b>实时同步</b>数据。
+      云端使用 <b>GitHub Gist API</b>（Secret Gist，安全可靠），离线时自动使用本机缓存，联网后点击「⟳ 同步」即可上传/拉取。
+      每个房间独立隔离，互不可见。需先在房间对话框中输入 GitHub Token（仅需 gist 权限）。
+    </p>
+    <div class="filters">
+      <button class="btn" id="btnPush">⬆ 上传本地数据到云端</button>
+      <button class="btn ghost" id="btnPull">⬇ 从云端拉取覆盖本地</button>
+      <button class="btn ghost" id="btnExportAll">💾 导出全量JSON备份</button>
+      <label class="btn ghost file">📂 导入JSON备份<input type="file" id="jsonIn" accept=".json"></label>
+      <button class="btn danger" id="btnResetAll">🗑 重置为初始数据</button>
+    </div>
+    <div id="syncLog" class="log"></div>
+  </div>
+</section>
+</main>
+
+<footer>库存进销存智能管理看板系统 · 数据期间 <span id="ftPeriod"></span> · <span id="ftUpdated"></span></footer>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
