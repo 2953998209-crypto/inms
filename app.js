@@ -1,7 +1,7 @@
 /* 库存进销存智能管理看板系统 · GitHub Pages 云同步版
  * 重点改进：
  * 1. 上传：精准识别「购进/销售汇总/业务员明细/现存量」4 类 Excel
- * 2. 同步：房间制 + GitHub Gist API，纯前端实现，适配 GitHub Pages 静态托管
+ * 2. 同步：房间制 + GitHub Contents API，纯前端实现，适配 GitHub Pages 静态托管
  * 3. 分类：图片中 17 类产品分类体系，全模块贯通筛选
  * 4. 健壮性：离线/在线无缝切换，广播通道多 tab 实时同步
  */
@@ -76,20 +76,33 @@ function guessCatByImage(name) {
   return null;
 }
 
-/* ============== 多端同步引擎（房间制 + GitHub Gist API） ============== */
-/* GitHub Pages 纯静态托管，使用 Gist API 作为云端 KV 存储：
- * - 每个房间 = 一个 Secret Gist，内含 data.json
- * - Room ID = Gist ID（32 位十六进制字符串）
- * - 用户在房间对话框中输入 GitHub Token（仅存 localStorage，不上传）
- * - 多端同步：各设备输入同一 Gist ID + 各自 Token 即可
+/* ============== 多端同步引擎（房间制 + GitHub Contents API） ============== */
+/* GitHub Pages 纯静态托管，使用 Contents API 在仓库内存储同步数据：
+ * - 每个 GitHub Token 只需 repo 权限（无需 gist）
+ * - 每个房间 = 仓库 _cloud/{roomId}.json 文件
+ * - Room ID = 自动生成的唯一字符串
+ * - 多端同步：各设备输入同一 Room ID + 各自 Token 即可
+ * - 更新时自动管理 SHA，支持冲突重试
  */
 const GITHUB_API = 'https://api.github.com';
 const ROOMS_KEY = 'inms_rooms_v2';
 const ROOM_KEY = 'inms_current_room_v2';
 const TOKEN_KEY = 'inms_github_token';
+const SHA_KEY = 'inms_sha_cache';
 const LS = 'inms_dashboard_v2';
 const CHAN_NAME = 'inms_sync_v2';
 const POLL_MS = 15000;  // 15s 轮询（GitHub API 限制 5000 req/h）
+const CLOUD_DIR = '_cloud';
+
+/* 从 GitHub Pages URL 自动检测仓库信息 */
+function detectRepo() {
+  try {
+    const m = location.href.match(/^https?:\/\/([^./]+)\.github\.io\/([^/]+)/);
+    if (m) return { owner: m[1], repo: m[2] };
+  } catch (e) { }
+  return null;
+}
+const REPO_INFO = detectRepo();
 
 function loadRooms() {
   try { return JSON.parse(localStorage.getItem(ROOMS_KEY)) || []; } catch (e) { return []; }
@@ -99,6 +112,12 @@ function getRoomId() { return localStorage.getItem(ROOM_KEY) || ''; }
 function setRoomId(id) { localStorage.setItem(ROOM_KEY, id); S.roomId = id; updateRoomUI(); }
 function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
 function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+
+/* SHA 缓存（Contents API 更新文件需要提供当前 SHA） */
+function _loadShaCache() { try { return JSON.parse(localStorage.getItem(SHA_KEY) || '{}'); } catch (e) { return {}; } }
+function _saveShaCache(obj) { try { localStorage.setItem(SHA_KEY, JSON.stringify(obj)); } catch (e) { } }
+function getSha(roomId) { return _loadShaCache()[roomId] || ''; }
+function setSha(roomId, sha) { const c = _loadShaCache(); c[roomId] = sha; _saveShaCache(c); }
 
 function _ghHeaders() {
   const token = getToken();
@@ -110,61 +129,120 @@ function _ghHeaders() {
 }
 
 function hasToken() { return getToken().length > 10; }
+function hasRepo() { return !!REPO_INFO; }
 
-/* 通过 Gist ID 读取房间数据 */
+function _cloudPath(roomId) { return CLOUD_DIR + '/' + roomId + '.json'; }
+function _cloudUrl(roomId) {
+  return GITHUB_API + '/repos/' + REPO_INFO.owner + '/' + REPO_INFO.repo + '/contents/' + _cloudPath(roomId);
+}
+
+/* UTF-8 安全的 base64 编解码（支持中文） */
+function _b64encode(str) {
+  try { return btoa(unescape(encodeURIComponent(str))); }
+  catch (e) { return btoa(str); }
+}
+function _b64decode(b64) {
+  try { return decodeURIComponent(escape(atob(b64.replace(/\s/g, '')))); }
+  catch (e) { return atob(b64); }
+}
+
+/* 读取房间数据 */
 async function cloudGet(roomId) {
-  if (!roomId) return null;
-  if (!hasToken()) { console.warn('No GitHub token set'); return null; }
+  if (!roomId || !hasRepo() || !hasToken()) return null;
   try {
-    const r = await fetch(GITHUB_API + '/gists/' + roomId, {
+    const r = await fetch(_cloudUrl(roomId) + '?t=' + Date.now(), {
       headers: _ghHeaders(), cache: 'no-store'
     });
     if (!r.ok) return null;
-    const gist = await r.json();
-    const f = gist.files && gist.files['data.json'];
-    if (!f || !f.content) return null;
-    return JSON.parse(f.content);
+    const j = await r.json();
+    if (j.sha) setSha(roomId, j.sha);
+    if (!j.content) return null;
+    const text = _b64decode(j.content);
+    return JSON.parse(text);
   } catch (e) { console.error('cloudGet error', e); return null; }
 }
 
-/* 通过 Gist ID 写入房间数据 */
+/* 写入房间数据（自动管理 SHA，支持冲突重试） */
 async function cloudPut(roomId, payload) {
-  if (!roomId) return false;
-  if (!hasToken()) { console.warn('No GitHub token set'); return false; }
+  if (!roomId || !hasRepo() || !hasToken()) return false;
+  const content = _b64encode(JSON.stringify(payload));
+  const body = { message: 'INMS sync: ' + new Date().toISOString(), content };
+  const sha = getSha(roomId);
+  if (sha) body.sha = sha;
   try {
-    const r = await fetch(GITHUB_API + '/gists/' + roomId, {
-      method: 'PATCH',
-      headers: _ghHeaders(),
-      body: JSON.stringify({
-        description: 'INMS Room · updated ' + new Date().toISOString().slice(0, 16),
-        files: { 'data.json': { content: JSON.stringify(payload) } }
-      }),
-      cache: 'no-store'
+    const r = await fetch(_cloudUrl(roomId), {
+      method: 'PUT', headers: _ghHeaders(),
+      body: JSON.stringify(body), cache: 'no-store'
     });
-    return r.ok;
+    if (r.ok) {
+      const j = await r.json();
+      if (j.content && j.content.sha) setSha(roomId, j.content.sha);
+      return true;
+    }
+    /* SHA 过期（其他设备已更新）：重新获取 SHA 后重试一次 */
+    if (r.status === 409 || r.status === 422) {
+      const getR = await fetch(_cloudUrl(roomId) + '?t=' + Date.now(), {
+        headers: _ghHeaders(), cache: 'no-store'
+      });
+      if (getR.ok) {
+        const gj = await getR.json();
+        if (gj.sha) {
+          setSha(roomId, gj.sha);
+          body.sha = gj.sha;
+          const r2 = await fetch(_cloudUrl(roomId), {
+            method: 'PUT', headers: _ghHeaders(),
+            body: JSON.stringify(body), cache: 'no-store'
+          });
+          if (r2.ok) {
+            const j2 = await r2.json();
+            if (j2.content && j2.content.sha) setSha(roomId, j2.content.sha);
+            return true;
+          }
+        }
+      }
+    }
+    console.error('cloudPut failed:', r.status, await r.text().catch(() => ''));
+    return false;
   } catch (e) { console.error('cloudPut error', e); return false; }
 }
 
-/* 创建新 Gist 作为房间，返回 Gist ID */
+/* 创建新房间（在仓库 _cloud/ 目录创建新 JSON 文件），返回 Room ID */
 async function cloudCreateRoom(name, payload) {
-  if (!hasToken()) return null;
+  if (!hasRepo() || !hasToken()) return null;
+  const roomId = 'room-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const content = _b64encode(JSON.stringify(payload));
   try {
-    const r = await fetch(GITHUB_API + '/gists', {
-      method: 'POST',
-      headers: _ghHeaders(),
+    const r = await fetch(_cloudUrl(roomId), {
+      method: 'PUT', headers: _ghHeaders(),
       body: JSON.stringify({
-        description: 'INMS Room: ' + (name || 'Untitled'),
-        public: false,
-        files: {
-          'data.json': { content: JSON.stringify(payload) },
-          'README.md': { content: '# INMS Room: ' + (name || '') + '\n\n此 Gist 由库存进销存看板系统自动创建，用于多端数据同步。\n请勿手动编辑 data.json。' }
-        }
-      })
+        message: 'INMS: 创建房间 ' + (name || roomId),
+        content
+      }),
+      cache: 'no-store'
     });
-    if (!r.ok) return null;
-    const gist = await r.json();
-    return gist.id || null;
+    if (r.ok) {
+      const j = await r.json();
+      if (j.content && j.content.sha) setSha(roomId, j.content.sha);
+      return roomId;
+    }
+    console.error('cloudCreateRoom failed:', r.status, await r.text().catch(() => ''));
+    return null;
   } catch (e) { console.error('cloudCreateRoom error', e); return null; }
+}
+
+/* 删除房间数据文件 */
+async function cloudDeleteRoom(roomId) {
+  if (!roomId || !hasRepo() || !hasToken()) return false;
+  const sha = getSha(roomId);
+  if (!sha) return false;
+  try {
+    const r = await fetch(_cloudUrl(roomId), {
+      method: 'DELETE', headers: _ghHeaders(),
+      body: JSON.stringify({ message: 'INMS: 删除房间 ' + roomId, sha }),
+      cache: 'no-store'
+    });
+    return r.ok;
+  } catch (e) { return false; }
 }
 
 /* 跨 tab 实时同步 */
@@ -196,8 +274,13 @@ async function push(silent) {
     return false;
   }
   if (!hasToken()) {
-    if (!silent) toast('请先在房间对话框中输入 GitHub Token', 'err');
+    if (!silent) toast('请先在房间对话框中输入 GitHub Token（需 repo 权限）', 'err');
     setBadge('缺少 Token', 'err');
+    return false;
+  }
+  if (!hasRepo()) {
+    if (!silent) toast('无法识别仓库信息，请确保通过 GitHub Pages 访问', 'err');
+    setBadge('配置错误', 'err');
     return false;
   }
   S.data.updatedAt = Date.now();
@@ -205,6 +288,7 @@ async function push(silent) {
   // 本地持久化
   try { localStorage.setItem(LS, JSON.stringify(S.data)); } catch (e) { }
   try {
+    if (!silent) { setBadge('上传中…', 'warn'); toast('正在上传到云端…'); }
     const ok = await cloudPut(roomId, S.data);
     if (ok) {
       S.online = true;
@@ -214,11 +298,11 @@ async function push(silent) {
       broadcastSync();
       return true;
     }
-    throw new Error('cloud fail');
+    throw new Error('cloudPut returned false');
   } catch (e) {
-    setBadge('离线模式', 'err');
-    log('#syncLog', '✘ 上传失败（离线）：已保存到本机', 'err');
-    if (!silent) toast('上传失败（离线）：已保存到本机', 'err');
+    setBadge('上传失败', 'err');
+    log('#syncLog', '✘ 上传失败：' + (e.message || '未知错误') + ' · 数据已保存到本机', 'err');
+    if (!silent) toast('上传失败：' + (e.message || '请检查 Token 权限和网络') + '，数据已保存到本机', 'err');
     return false;
   }
 }
@@ -279,8 +363,7 @@ function updateRoomUI() {
   const el = document.getElementById('roomBadge');
   if (el) {
     if (room) {
-      const short = room.replace(/^inv-/, '').split('-').slice(0, 2).join('-');
-      el.textContent = '🏠 ' + short;
+      el.textContent = '🏠 ' + room;
       el.className = 'badge ok';
       el.title = '当前房间：' + room;
     } else {
@@ -293,7 +376,7 @@ function updateRoomUI() {
   if (meta) {
     const tk = hasToken();
     meta.innerHTML = room
-      ? '当前房间：<b>' + esc(room.slice(0, 12) + '…') + '</b> · ' + (S.data.periods ? Object.keys(S.data.periods).length : 0) + ' 个期间 · ' + (S.online ? '在线' : '离线') + ' · Token: ' + (tk ? '<span style="color:#22d3a8">✓ 已设置</span>' : '<span style="color:#ff5d6c">✘ 未设置</span>')
+      ? '当前房间：<b>' + esc(room) + '</b> · ' + (S.data.periods ? Object.keys(S.data.periods).length : 0) + ' 个期间 · ' + (S.online ? '在线' : '离线') + ' · Token: ' + (tk ? '<span style="color:#22d3a8">✓ 已设置</span>' : '<span style="color:#ff5d6c">✘ 未设置</span>')
       : '当前房间：未加入（仅本机保存） · Token: ' + (tk ? '<span style="color:#22d3a8">✓ 已设置</span>' : '<span style="color:#ff5d6c">✘ 未设置</span>');
   }
 }
@@ -333,6 +416,10 @@ async function createRoom() {
     toast('请先在上方输入 GitHub Token', 'err');
     return;
   }
+  if (!hasRepo()) {
+    toast('无法识别仓库信息，请确保通过 GitHub Pages 访问', 'err');
+    return;
+  }
   // 确保有初始数据
   if (!S.data.periods || !Object.keys(S.data.periods).length) {
     try {
@@ -344,20 +431,20 @@ async function createRoom() {
   }
   S.data.updatedAt = Date.now();
   toast('正在创建云端房间…');
-  const gistId = await cloudCreateRoom(name, S.data);
-  if (!gistId) {
-    toast('创建房间失败，请检查 Token 权限（需 gist 范围）', 'err');
+  const roomId = await cloudCreateRoom(name, S.data);
+  if (!roomId) {
+    toast('创建房间失败，请检查 Token 权限（需 repo 范围）', 'err');
     return;
   }
   const rooms = loadRooms();
-  rooms.unshift({ id: gistId, name, createdAt: Date.now() });
+  rooms.unshift({ id: roomId, name, createdAt: Date.now() });
   saveRooms(rooms);
-  setRoomId(gistId);
+  setRoomId(roomId);
   S.online = true;
   setBadge('云端已同步', 'ok');
   hideRoomDialog();
   toast('已创建并加入房间「' + name + '」', 'ok');
-  log('#syncLog', '✅ 房间已创建：' + gistId, 'ok');
+  log('#syncLog', '✅ 房间已创建：' + roomId, 'ok');
   fillPeriods(); renderAll();
   updateRoomUI();
 }
@@ -390,12 +477,20 @@ async function copyRoomId(id) {
   }
 }
 
-function deleteRoom(id) {
-  if (!confirm('确定从房间列表中删除「' + id + '」？此操作仅清除本地记录，不会删除云端数据。')) return;
+async function deleteRoom(id) {
+  if (!confirm('确定删除房间「' + id + '」？\n\n此操作将：\n1. 从本机房间列表移除\n2. 尝试删除云端数据文件')) return;
+  // 尝试删除云端数据
+  if (hasToken() && hasRepo()) {
+    toast('正在删除云端数据…');
+    await cloudDeleteRoom(id);
+  }
   const rooms = loadRooms().filter(r => r.id !== id);
   saveRooms(rooms);
+  // 清理 SHA 缓存
+  const sc = _loadShaCache(); delete sc[id]; _saveShaCache(sc);
   if (getRoomId() === id) leaveRoom();
   else renderRoomList();
+  toast('房间已删除', 'ok');
 }
 
 /* ============== 全局状态 ============== */
@@ -1481,10 +1576,10 @@ function bind() {
   $('#btnJoinRoom').onclick = () => {
     if (!hasToken()) { toast('请先输入并保存 GitHub Token', 'err'); return; }
     const id = (document.getElementById('joinRoomId').value || '').trim();
-    if (!id) { toast('请输入房间 ID（Gist ID）', 'err'); return; }
+    if (!id) { toast('请输入房间 ID', 'err'); return; }
     const rooms = loadRooms();
     if (!rooms.find(r => r.id === id)) {
-      rooms.unshift({ id, name: 'Gist-' + id.slice(0, 8), createdAt: Date.now(), joined: true });
+      rooms.unshift({ id, name: id, createdAt: Date.now(), joined: true });
       saveRooms(rooms);
     }
     joinRoom(id);
@@ -1562,5 +1657,6 @@ function bind() {
     'color:#4aa8ff;font-size:14px;font-weight:bold');
   console.log('当前房间：' + (getRoomId() || '(未加入，请点击右上角「🏠 房间」)'));
   console.log('Token 状态：' + (hasToken() ? '✓ 已设置' : '✘ 未设置（请在房间对话框中输入）'));
-  console.log('同步方式：GitHub Gist API · 轮询间隔 ' + (POLL_MS / 1000) + 's');
+  console.log('仓库信息：' + (REPO_INFO ? REPO_INFO.owner + '/' + REPO_INFO.repo : '未识别'));
+  console.log('同步方式：GitHub Contents API · 轮询间隔 ' + (POLL_MS / 1000) + 's');
 })();
