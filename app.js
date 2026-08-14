@@ -257,6 +257,21 @@ async function cloudDeleteRoom(roomId) {
   } catch (e) { return false; }
 }
 
+/* 列出云端所有房间（读取 _cloud/ 目录） */
+async function cloudListRooms() {
+  if (!hasRepo() || !hasToken()) return [];
+  try {
+    const r = await fetch(GITHUB_API + '/repos/' + REPO_INFO.owner + '/' + REPO_INFO.repo + '/contents/' + CLOUD_DIR + '?t=' + Date.now(), {
+      headers: _ghHeaders(), cache: 'no-store'
+    });
+    if (!r.ok) return [];
+    const j = await r.json();
+    if (!Array.isArray(j)) return [];
+    return j.filter(f => f.type === 'file' && /\.json$/.test(f.name))
+            .map(f => f.name.replace(/\.json$/, ''));
+  } catch (e) { console.error('cloudListRooms error', e); return []; }
+}
+
 /* 跨 tab 实时同步 */
 let _bc = null;
 function setupBC() {
@@ -301,6 +316,21 @@ async function push(silent) {
   try { localStorage.setItem(LS, JSON.stringify(S.data)); } catch (e) { }
   try {
     if (!silent) { setBadge('上传中…', 'warn'); toast('正在上传到云端…'); }
+    /* 防降级保护：云端存在而本地缺失的期间（如新设备仅剩种子数据时），先合并到本地，
+       避免新设备用少量数据覆盖云端数月数据 */
+    try {
+      const remote = await cloudGet(roomId);
+      if (remote && remote.periods) {
+        let added = 0;
+        for (const p of Object.keys(remote.periods)) {
+          if (!S.data.periods[p]) { S.data.periods[p] = remote.periods[p]; added++; }
+        }
+        if (added) {
+          log('#syncLog', '⚠ 上传前已从云端合并 ' + added + ' 个本地缺失的期间，防止数据丢失', 'warn');
+          try { localStorage.setItem(LS, JSON.stringify(S.data)); } catch (e) { }
+        }
+      }
+    } catch (e) { console.warn('push merge-guard skipped', e); }
     const ok = await cloudPut(roomId, S.data);
     if (ok) {
       S.online = true;
@@ -342,8 +372,11 @@ async function pull(silent) {
     if (remote && remote.periods && Object.keys(remote.periods).length) {
       const remoteTime = remote.updatedAt || 0;
       const localTime = S.data.updatedAt || 0;
-      if (remoteTime > localTime) {
+      /* 本地数据不属于当前房间（首次加入/自动加入）时强制采纳云端，避免本地种子数据挡住云端数据 */
+      const localFromOtherRoom = S.data.roomId !== roomId;
+      if (remoteTime > localTime || localFromOtherRoom) {
         S.data = remote;
+        S.data.roomId = roomId;
         try { localStorage.setItem(LS, JSON.stringify(S.data)); } catch (e) { }
         fillPeriods(); renderAll();
         S.online = true;
@@ -1736,14 +1769,19 @@ function bind() {
 }
 
 (async function init() {
-  // 支持 URL 参数自动配置 Token: ?token=ghp_xxx
+  // 支持 URL 参数自动配置: ?token=ghp_xxx（Token）&room=xxx（房间）
+  let urlRoom = null;
   try {
     const params = new URLSearchParams(location.search);
     const urlToken = params.get('token');
+    urlRoom = params.get('room');
+    if (urlRoom && !/^[\w.-]+$/.test(urlRoom)) urlRoom = null; // 房间 ID 白名单校验
     if (urlToken && urlToken.length > 10) {
       setToken(urlToken);
       console.log('✓ Token 已从 URL 参数自动配置');
-      // 清除 URL 中的 token 参数（安全考虑）
+    }
+    if (urlToken || urlRoom) {
+      // 清除 URL 中的敏感/临时参数
       const cleanUrl = location.pathname + location.hash;
       history.replaceState(null, '', cleanUrl);
     }
@@ -1769,14 +1807,36 @@ function bind() {
   }
   setupBC();
   startPoll();
+
+  /* 自动加入房间（手机端零配置）：
+     1) URL 带 ?room=xxx → 直接加入该房间
+     2) 已保存 Token 但本机未加入任何房间 → 若云端只有一个房间则自动加入（多房间时不自动猜，需手动加入） */
+  if (!getRoomId() && hasToken() && hasRepo()) {
+    let target = urlRoom;
+    if (!target) {
+      const cloudRooms = await cloudListRooms();
+      if (cloudRooms.length === 1) target = cloudRooms[0];
+      else if (cloudRooms.length > 1) console.log('云端有 ' + cloudRooms.length + ' 个房间，请在「🏠 房间」中手动加入：' + cloudRooms.join(', '));
+    }
+    if (target) {
+      const rooms = loadRooms();
+      if (!rooms.find(r => r.id === target)) rooms.unshift({ id: target, name: target === 'ims' ? '默认房间' : target, createdAt: Date.now(), auto: true });
+      saveRooms(rooms);
+      setRoomId(target);
+      console.log('✓ 已自动加入房间：' + target);
+    }
+  }
+
   S.roomId = getRoomId();
   if (S.roomId && hasToken() && hasRepo()) {
     const remote = await cloudGet(S.roomId);
     if (remote && remote.periods && Object.keys(remote.periods).length) {
       const remoteTime = remote.updatedAt || 0;
       const localTime = S.data.updatedAt || 0;
-      if (remoteTime > localTime) {
+      /* 本地数据不属于当前房间时强制采纳云端数据 */
+      if (remoteTime > localTime || S.data.roomId !== S.roomId) {
         S.data = remote;
+        S.data.roomId = S.roomId;
         try { localStorage.setItem(LS, JSON.stringify(S.data)); } catch (e) { }
       }
       S.online = true;

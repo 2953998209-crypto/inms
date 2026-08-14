@@ -9,7 +9,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
 <script src="lib/chart.min.js"></script>
 <script src="lib/xlsx.full.min.js"></script>
-<link rel="stylesheet" href="style.css?v=20260815">
+<link rel="stylesheet" href="style.css?v=20260816">
 </head>
 <body>
 <div id="loader"><div class="spin"></div><p>正在加载数据…</p></div>
@@ -62,7 +62,7 @@
       <div class="filters" style="margin-top:14px">
         <button class="btn danger" id="btnLeaveRoom">🚪 退出当前房间</button>
       </div>
-      <p class="note" style="margin-top:14px;font-size:12px">💡 同一房间的手机和电脑访问本系统会实时同步数据。云端使用 <b>GitHub Contents API</b> 将数据存储在仓库 <code>_cloud/</code> 目录（安全可靠），离线时使用本机缓存，联网后点击「⟳ 同步」即可上传/拉取。每个房间独立隔离。</p>
+      <p class="note" style="margin-top:14px;font-size:12px">💡 同一房间的手机和电脑访问本系统会实时同步数据。<b>手机端只需打开带 Token 的分享链接，会自动加入云端房间</b>，无需手动配置。云端使用 <b>GitHub Contents API</b> 将数据存储在仓库 <code>_cloud/</code> 目录（安全可靠），离线时使用本机缓存，联网后点击「⟳ 同步」即可上传/拉取。每个房间独立隔离。</p>
       <div class="filters" style="margin-top:10px">
         <button class="btn ghost" id="btnDiag">🔍 诊断同步问题</button>
       </div>
@@ -309,6 +309,6 @@
 
 <footer>库存进销存智能管理看板系统 · 数据期间 <span id="ftPeriod"></span> · <span id="ftUpdated"></span></footer>
 <div id="toast"></div>
-<script src="app.js?v=20260815"></script>
+<script src="app.js?v=20260816"></script>
 </body>
 </html>
