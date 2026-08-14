@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>同步诊断 - INMS</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; max-width: 800px; margin: 0 auto; }
+  h1 { color: #58a6ff; margin-bottom: 16px; font-size: 20px; }
+  h2 { color: #8b949e; margin: 20px 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid #21262d; }
+  .step:last-child { border-bottom: none; }
+  .icon { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+  .icon.ok { background: #1a7f37; color: #fff; }
+  .icon.err { background: #da3633; color: #fff; }
+  .icon.wait { background: #30363d; color: #8b949e; }
+  .icon.run { background: #1f6feb; color: #fff; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .step-body { flex: 1; }
+  .step-title { font-weight: 600; margin-bottom: 4px; }
+  .step-detail { font-size: 13px; color: #8b949e; word-break: break-all; }
+  .step-detail code { background: #0d1117; padding: 2px 6px; border-radius: 4px; color: #79c0ff; font-size: 12px; }
+  input { width: 100%; padding: 10px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-family: monospace; font-size: 14px; margin-bottom: 8px; }
+  button { padding: 10px 20px; background: #1f6feb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #388bfd; }
+  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  .log { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+  .log .ok { color: #3fb950; }
+  .log .err { color: #f85149; }
+  .log .warn { color: #d29922; }
+  .log .info { color: #79c0ff; }
+  a { color: #58a6ff; }
+  .hint { font-size: 12px; color: #8b949e; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h1>🔍 INMS 同步诊断工具</h1>
+<p style="margin-bottom:16px;color:#8b949e">此页面将逐步检查同步系统的每个环节，帮助定位问题。</p>
+
+<div class="card">
+  <h2>Step 0: 输入 GitHub Token</h2>
+  <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" value="">
+  <button onclick="runDiag()">开始诊断</button>
+  <p class="hint">Token 仅用于本次诊断，不会保存。诊断完成后请回到 <a href="https://2953998209-crypto.github.io/inms/">主系统</a> 正式使用。</p>
+</div>
+
+<div id="results"></div>
+
+<div class="card" style="display:none" id="logCard">
+  <h2>详细日志</h2>
+  <div class="log" id="logBox"></div>
+</div>
+
+<script>
+const API = 'https://api.github.com';
+const OWNER = '2953998209-crypto';
+const REPO = 'inms';
+
+function log(msg, cls) {
+  const box = document.getElementById('logBox');
+  const span = document.createElement('span');
+  span.className = cls || 'info';
+  span.textContent = msg + '\n';
+  box.appendChild(span);
+  document.getElementById('logCard').style.display = 'block';
+  box.scrollTop = box.scrollHeight;
+}
+
+function addStep(id, status, title, detail) {
+  const icons = { ok: '✓', err: '✗', wait: '…', run: '↻' };
+  const html = `<div class="step" id="${id}">
+    <div class="icon ${status}">${icons[status] || '…'}</div>
+    <div class="step-body">
+      <div class="step-title">${title}</div>
+      <div class="step-detail">${detail || ''}</div>
+    </div>
+  </div>`;
+  document.getElementById('results').innerHTML += html;
+}
+
+function updateStep(id, status, title, detail) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const icons = { ok: '✓', err: '✗', wait: '…', run: '↻' };
+  const ic = el.querySelector('.icon');
+  ic.className = 'icon ' + status;
+  ic.textContent = icons[status] || '…';
+  if (title) el.querySelector('.step-title').textContent = title;
+  if (detail !== undefined) el.querySelector('.step-detail').innerHTML = detail;
+}
+
+async function runDiag() {
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('logBox').innerHTML = '';
+  const token = document.getElementById('token').value.trim();
+
+  // Step 1: Token check
+  addStep('s1', 'run', '检查 Token 格式', '');
+  if (!token || token.length < 10) {
+    updateStep('s1', 'err', 'Token 格式检查', 'Token 为空或太短，请输入有效的 GitHub Token');
+    return;
+  }
+  updateStep('s1', 'ok', 'Token 格式检查', 'Token 长度: ' + token.length + ' 字符');
+  log('Token: ' + token.slice(0, 10) + '...' + token.slice(-4), 'info');
+
+  // Step 2: GitHub API connectivity (GET /user)
+  addStep('s2', 'run', '检查 GitHub API 连通性', '正在请求 /user ...');
+  log('→ GET ' + API + '/user', 'info');
+  try {
+    const r = await fetch(API + '/user', {
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    log('← HTTP ' + r.status, r.ok ? 'ok' : 'err');
+    if (!r.ok) {
+      const body = await r.text();
+      log('← Body: ' + body.slice(0, 500), 'err');
+      updateStep('s2', 'err', 'GitHub API 连通性', 'HTTP ' + r.status + ' - ' + body.slice(0, 200));
+      return;
+    }
+    const user = await r.json();
+    updateStep('s2', 'ok', 'GitHub API 连通性', '用户: <code>' + user.login + '</code> (ID: ' + user.id + ')');
+    log('用户: ' + user.login, 'ok');
+  } catch (e) {
+    log('← 网络错误: ' + e.message, 'err');
+    updateStep('s2', 'err', 'GitHub API 连通性', '网络错误: ' + e.message + ' (可能是 CORS 或网络问题)');
+    return;
+  }
+
+  // Step 3: Token scopes
+  addStep('s3', 'run', '检查 Token 权限范围', '');
+  try {
+    const r = await fetch(API + '/user', {
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    const scopes = r.headers.get('X-OAuth-Scopes') || '(none)';
+    log('X-OAuth-Scopes: ' + scopes, 'info');
+    const hasRepo = scopes.includes('repo');
+    updateStep('s3', hasRepo ? 'ok' : 'err', 'Token 权限范围',
+      'Scopes: <code>' + scopes + '</code>' + (hasRepo ? ' ✓ 包含 repo' : ' ✘ 缺少 repo 权限！'));
+    if (!hasRepo) {
+      log('✘ Token 缺少 repo 权限！请重新生成 token 并勾选 repo。', 'err');
+      return;
+    }
+  } catch (e) {
+    updateStep('s3', 'err', 'Token 权限范围', '无法获取: ' + e.message);
+  }
+
+  // Step 4: Repository access
+  addStep('s4', 'run', '检查仓库访问权限', 'GET /repos/' + OWNER + '/' + REPO);
+  try {
+    const r = await fetch(API + '/repos/' + OWNER + '/' + REPO, {
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    log('← HTTP ' + r.status, r.ok ? 'ok' : 'err');
+    if (!r.ok) {
+      const body = await r.text();
+      log('← Body: ' + body.slice(0, 300), 'err');
+      updateStep('s4', 'err', '仓库访问权限', 'HTTP ' + r.status + ' - 无法访问仓库');
+      return;
+    }
+    const repo = await r.json();
+    const canPush = repo.permissions && repo.permissions.push;
+    updateStep('s4', canPush ? 'ok' : 'err', '仓库访问权限',
+      '仓库: <code>' + repo.full_name + '</code> · 写权限: ' + (canPush ? '✓' : '✘'));
+    log('仓库: ' + repo.full_name + ', push=' + (canPush ? 'yes' : 'no'), canPush ? 'ok' : 'err');
+    if (!canPush) {
+      log('✘ Token 没有该仓库的写权限！', 'err');
+      return;
+    }
+  } catch (e) {
+    updateStep('s4', 'err', '仓库访问权限', '网络错误: ' + e.message);
+    return;
+  }
+
+  // Step 5: Test create file via Contents API
+  addStep('s5', 'run', '测试 Contents API 写入', 'PUT /repos/.../contents/_cloud/diag-test.json');
+  const testPayload = { test: true, timestamp: new Date().toISOString(), msg: 'INMS diagnostic test' };
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(testPayload))));
+  let testSha = '';
+  try {
+    const r = await fetch(API + '/repos/' + OWNER + '/' + REPO + '/contents/_cloud/diag-test.json', {
+      method: 'PUT',
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'INMS diagnostic test', content: b64 })
+    });
+    log('← HTTP ' + r.status, r.ok ? 'ok' : 'err');
+    const body = await r.json();
+    if (!r.ok) {
+      log('← Body: ' + JSON.stringify(body).slice(0, 500), 'err');
+      updateStep('s5', 'err', 'Contents API 写入', 'HTTP ' + r.status + ' - ' + (body.message || JSON.stringify(body).slice(0, 200)));
+      return;
+    }
+    testSha = body.content && body.content.sha;
+    updateStep('s5', 'ok', 'Contents API 写入', '✓ 文件已创建, sha=' + (testSha || '').slice(0, 12));
+    log('✓ 文件创建成功, sha=' + testSha, 'ok');
+  } catch (e) {
+    log('← 异常: ' + e.message, 'err');
+    updateStep('s5', 'err', 'Contents API 写入', '异常: ' + e.message + ' (可能 CORS 被拦截)');
+    return;
+  }
+
+  // Step 6: Test read back
+  addStep('s6', 'run', '测试 Contents API 读取', 'GET /repos/.../contents/_cloud/diag-test.json');
+  try {
+    const r = await fetch(API + '/repos/' + OWNER + '/' + REPO + '/contents/_cloud/diag-test.json?t=' + Date.now(), {
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
+    });
+    log('← HTTP ' + r.status, r.ok ? 'ok' : 'err');
+    if (!r.ok) {
+      updateStep('s6', 'err', 'Contents API 读取', 'HTTP ' + r.status);
+      return;
+    }
+    const body = await r.json();
+    const decoded = decodeURIComponent(escape(atob(body.content.replace(/\s/g, ''))));
+    const data = JSON.parse(decoded);
+    updateStep('s6', 'ok', 'Contents API 读取', '✓ 数据一致: ' + JSON.stringify(data).slice(0, 80));
+    log('✓ 读取成功: ' + JSON.stringify(data), 'ok');
+  } catch (e) {
+    updateStep('s6', 'err', 'Contents API 读取', '异常: ' + e.message);
+    log('← 异常: ' + e.message, 'err');
+  }
+
+  // Step 7: Cleanup
+  addStep('s7', 'run', '清理测试数据', '');
+  try {
+    const r = await fetch(API + '/repos/' + OWNER + '/' + REPO + '/contents/_cloud/diag-test.json', {
+      method: 'DELETE',
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'cleanup', sha: testSha })
+    });
+    updateStep('s7', r.ok ? 'ok' : 'err', '清理测试数据', r.ok ? '✓ 已删除' : 'HTTP ' + r.status);
+    log('清理: HTTP ' + r.status, r.ok ? 'ok' : 'warn');
+  } catch (e) {
+    updateStep('s7', 'err', '清理测试数据', '异常: ' + e.message);
+  }
+
+  // Summary
+  addStep('s8', 'ok', '诊断完成', '所有步骤已执行完毕。上方全为 ✓ 表示同步系统正常工作。');
+  log('\n========== 诊断完成 ==========', 'ok');
+  log('如果所有步骤都是 ✓，请回到主系统重新尝试。', 'info');
+  log('如果某步显示 ✘，请根据错误信息修正后重试。', 'info');
+}
+
+// Auto-fill token from URL param
+const urlToken = new URLSearchParams(location.search).get('token');
+if (urlToken) document.getElementById('token').value = urlToken;
+</script>
+</body>
+</html>
