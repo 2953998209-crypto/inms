@@ -315,8 +315,13 @@ async function pull(silent) {
     return false;
   }
   if (!hasToken()) {
-    if (!silent) toast('请先在房间对话框中输入 GitHub Token', 'err');
+    if (!silent) toast('请先在房间对话框中输入 GitHub Token（需 repo 权限）', 'err');
     setBadge('缺少 Token', 'err');
+    return false;
+  }
+  if (!hasRepo()) {
+    if (!silent) toast('无法识别仓库信息，请确保通过 GitHub Pages 访问', 'err');
+    setBadge('配置错误', 'err');
     return false;
   }
   try {
@@ -353,7 +358,7 @@ let _pollTimer = null;
 function startPoll() {
   if (_pollTimer) clearInterval(_pollTimer);
   _pollTimer = setInterval(() => {
-    if (!document.hidden && getRoomId()) pull(true);
+    if (!document.hidden && getRoomId() && hasToken() && hasRepo()) pull(true);
   }, POLL_MS);
 }
 
@@ -1620,7 +1625,7 @@ function bind() {
   setupBC();
   startPoll();
   S.roomId = getRoomId();
-  if (S.roomId && hasToken()) {
+  if (S.roomId && hasToken() && hasRepo()) {
     const remote = await cloudGet(S.roomId);
     if (remote && remote.periods && Object.keys(remote.periods).length) {
       const remoteTime = remote.updatedAt || 0;
@@ -1637,6 +1642,8 @@ function bind() {
     }
   } else if (S.roomId && !hasToken()) {
     setBadge('需设置 Token', 'warn');
+  } else if (S.roomId && !hasRepo()) {
+    setBadge('需通过 Pages 访问', 'warn');
   } else {
     setBadge('本地模式', 'warn');
   }
