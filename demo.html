@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>库存进销存看板（演示系统）</title>
+<script src="lib/chart.min.js"></script>
+<script src="lib/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="style.css">
+<style>
+  body::before {
+    content: "【演示数据·仅供体验】";
+    position: fixed; top: 5px; left: 50%; transform: translateX(-50%);
+    background: #f00; color: #fff; padding: 4px 16px; border-radius: 20px;
+    font-size: 12px; z-index: 9999; font-weight: bold;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+</style>
+</head>
+<body>
+<div id="loader"><div class="spin"></div><p>正在加载演示数据…</p></div>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">📦</span>
+    <div>
+      <h1>库存进销存智能管理看板</h1>
+      <small id="orgName">湖北盐业集团荆州分公司（演示）</small>
+    </div>
+  </div>
+  <div class="topctl">
+    <select id="periodSel" title="统计期间"></select>
+    <span id="roomBadge" class="badge">🏠 未加入房间</span>
+    <span id="syncBadge" class="badge" style="background:#666">本地模式</span>
+  </div>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-tab="overview" class="on">总览</button>
+  <button data-tab="stock">库存管理</button>
+  <button data-tab="sales">销售汇总</button>
+  <button data-tab="staff">业务员分析</button>
+  <button data-tab="forecast">预测分析</button>
+  <button data-tab="year">年度汇总</button>
+  <button data-tab="upload">数据上传</button>
+</nav>
+<main>
+<section id="tab-overview" class="tab on">
+  <div class="kpis" id="kpis"></div>
+  <div class="grid2">
+    <div class="card"><h3>各品类销量占比</h3><div class="cbox"><canvas id="chCatPie"></canvas></div></div>
+    <div class="card"><h3>品类进销存对比</h3><div class="cbox"><canvas id="chPSI"></canvas></div></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>月度销量趋势</h3><div class="cbox"><canvas id="chDaily"></canvas></div></div>
+    <div class="card"><h3>业务员销量排名</h3><div class="cbox"><canvas id="chStaff"></canvas></div></div>
+  </div>
+  <div class="card"><h3>库存预警 <span class="tag" id="warnCount">0</span></h3><div class="tblwrap"><table id="tbWarnTop"></table></div></div>
+</section>
+<section id="tab-stock" class="tab">
+  <div class="card"><h3>库存产品台账</h3>
+    <div class="filters">
+      <input id="stkSearch" placeholder="搜索商品">
+      <select id="stkWh"><option value="">全部仓库</option></select>
+      <select id="stkStatus"><option value="">全部状态</option><option>断货/缺货</option><option>低于安全库存</option><option>正常</option><option>呆滞积压</option></select>
+    </div>
+    <div class="tblwrap"><table id="tbStock"></table></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>库存变化 Top15</h3><div class="cbox tall"><canvas id="chStockFlow"></canvas></div></div>
+    <div class="card"><h3>各仓库库存分布</h3><div class="cbox tall"><canvas id="chWh"></canvas></div></div>
+  </div>
+</section>
+<section id="tab-sales" class="tab">
+  <div class="kpis" id="kpisSales"></div>
+  <div class="grid2">
+    <div class="card"><h3>品类销量排名</h3><div class="cbox"><canvas id="chSalesCat"></canvas></div></div>
+    <div class="card"><h3>单品销量 Top10</h3><div class="cbox"><canvas id="chSalesTop"></canvas></div></div>
+  </div>
+  <div class="card"><h3>商品销售汇总</h3>
+    <div class="filters"><input id="sumSearch" placeholder="搜索"><select id="sumCat"><option value="">全部分类</option></select></div>
+    <div class="tblwrap"><table id="tbSalesSum"></table></div>
+  </div>
+</section>
+<section id="tab-staff" class="tab">
+  <div class="kpis" id="kpisStaff"></div>
+  <div class="grid2">
+    <div class="card"><h3>业务员销量排名</h3><div class="cbox"><canvas id="chStaffAmt"></canvas></div></div>
+    <div class="card"><h3>各产品销量构成</h3><div class="cbox"><canvas id="chStaffProd"></canvas></div></div>
+  </div>
+  <div class="card"><h3>销售台账明细 <span class="tag" id="ledgerCount">0</span></h3><div class="tblwrap scroll"><table id="tbLedger"></table></div></div>
+</section>
+<section id="tab-forecast" class="tab">
+  <div class="kpis" id="kpisFc"></div>
+  <div class="card"><h3>下月销量预测</h3><div class="cbox tall"><canvas id="chFc"></canvas></div></div>
+  <div class="card"><h3>备货建议</h3><div class="tblwrap"><table id="tbFc"></table></div></div>
+</section>
+<section id="tab-year" class="tab">
+  <div class="kpis" id="kpisYear"></div>
+  <div class="grid2">
+    <div class="card"><h3>月度销量走势</h3><div class="cbox"><canvas id="chYearTrend"></canvas></div></div>
+    <div class="card"><h3>年度品类结构</h3><div class="cbox"><canvas id="chYearCat"></canvas></div></div>
+  </div>
+  <div class="card"><h3>年度商品分析</h3><div class="tblwrap"><table id="tbYearProd"></table></div></div>
+</section>
+<section id="tab-upload" class="tab">
+  <div class="card">
+    <h3>Excel 数据上传（演示版不支持上传）</h3>
+    <p class="note">演示系统已内置脱敏示例数据，展示了完整的7大模块功能。<br>如需真实使用，请访问：<b>https://2953998209-crypto.github.io/inms/</b></p>
+  </div>
+  <div class="card">
+    <h3>系统特色</h3>
+    <div style="padding:16px;font-size:14px">
+      <p>✅ <b>Excel智能识别</b> - 拖入.xlsx文件，自动识别4种表格类型</p>
+      <p>✅ <b>17类商品自动分类</b> - 盐/醋/酱油/油等智能归类</p>
+      <p>✅ <b>多端实时同步</b> - 手机扫码即用，数据与电脑端实时一致</p>
+      <p>✅ <b>零成本部署</b> - 无需服务器，打开网页即可使用</p>
+      <p>✅ <b>7大模块联动</b> - 总览/库存/销售/业务员/预测/年度/上传</p>
+    </div>
+  </div>
+</section>
+</main>
+<footer>演示系统 · 示例数据 · <a href="https://2953998209-crypto.github.io/inms/" style="color:#4af">访问真实系统</a></footer>
+<script>
+// ========== 演示数据（脱敏） ==========
+const DEMO_DATA = {
+  periods: {
+    '2026-01': {
+      period: '2026-01',
+      meta: { org: '湖北盐业集团荆州分公司（演示）' },
+      sales: [
+        {date:'2026-01-05',product:'特级碘盐500g',spec:'500g/袋',qty:120,sales:'张经理',customer:'荆州区商超',price:3.5,amount:420},
+        {date:'2026-01-08',product:'精制碘盐400g',spec:'400g/袋',qty:350,sales:'李经理',customer:'沙市区批发',price:2.8,amount:980},
+        {date:'2026-01-10',product:'大豆油5L',spec:'5L/桶',qty:80,sales:'王经理',customer:'荆州大酒店',price:68,amount:5440},
+        {date:'2026-01-12',product:'加碘盐400g',spec:'400g/袋',qty:200,sales:'张经理',customer:'监利县超市',price:2.8,amount:560},
+        {date:'2026-01-15',product:'原醋500ml',spec:'500ml/瓶',qty:150,sales:'李经理',customer:'沙市区商超',price:8.5,amount:1275},
+        {date:'2026-01-18',product:'特级碘盐500g',spec:'500g/袋',qty:180,sales:'赵经理',customer:'江陵县批发',price:3.5,amount:630},
+        {date:'2026-01-20',product:'酱油1.8L',spec:'1.8L/瓶',qty:60,sales:'王经理',customer:'荆州商超',price:15,amount:900},
+        {date:'2026-01-22',product:'精制碘盐400g',spec:'400g/袋',qty:400,sales:'张经理',customer:'石首市超市',price:2.8,amount:1120},
+        {date:'2026-01-25',product:'大豆油5L',spec:'5L/桶',qty:50,sales:'李经理',customer:'洪湖市批发',price:68,amount:3400},
+        {date:'2026-01-28',product:'加碘盐400g',spec:'400g/袋',qty:300,sales:'赵经理',customer:'荆州区商超',price:2.8,amount:840},
+      ],
+      salesSummary: [
+        {product:'特级碘盐500g',cat:'加碘盐',qty:300,amount:1050,sales:'张经理,赵经理',catSource:'image'},
+        {product:'精制碘盐400g',cat:'加碘盐',qty:750,amount:2100,sales:'张经理',catSource:'image'},
+        {product:'大豆油5L',cat:'农发产品',qty:130,amount:8840,sales:'王经理,李经理',catSource:'image'},
+        {product:'加碘盐400g',cat:'加碘盐',qty:500,amount:1400,sales:'张经理,赵经理',catSource:'image'},
+        {product:'原醋500ml',cat:'醋',qty:150,amount:1275,sales:'李经理',catSource:'image'},
+        {product:'酱油1.8L',cat:'酱油',qty:60,amount:900,sales:'王经理',catSource:'image'},
+      ],
+      purchase: [
+        {date:'2026-01-03',product:'特级碘盐500g',wh:'中心库',qty:500,purchaseQty1:300,purchaseQty2:200,cat:'加碘盐'},
+        {date:'2026-01-07',product:'精制碘盐400g',wh:'中心库',qty:800,purchaseQty1:500,purchaseQty2:300,cat:'加碘盐'},
+        {date:'2026-01-10',product:'大豆油5L',wh:'中心库',qty:200,purchaseQty1:120,purchaseQty2:80,cat:'农发产品'},
+        {date:'2026-01-14',product:'原醋500ml',wh:'储备库',qty:300,purchaseQty1:150,purchaseQty2:150,cat:'醋'},
+        {date:'2026-01-18',product:'酱油1.8L',wh:'中心库',qty:100,purchaseQty1:60,purchaseQty2:40,cat:'酱油'},
+        {date:'2026-01-22',product:'加碘盐400g',wh:'中心库',qty:600,purchaseQty1:350,purchaseQty2:250,cat:'加碘盐'},
+      ],
+      stock: [
+        {product:'特级碘盐500g',cat:'加碘盐',wh:'中心库',open:200,purchase:500,soldQty:300,stock:400,status:'正常'},
+        {product:'精制碘盐400g',cat:'加碘盐',wh:'中心库',open:150,purchase:800,soldQty:750,stock:200,status:'低于安全库存'},
+        {product:'大豆油5L',cat:'农发产品',wh:'中心库',open:50,purchase:200,soldQty:130,stock:120,status:'正常'},
+        {product:'加碘盐400g',cat:'加碘盐',wh:'中心库',open:100,purchase:600,soldQty:500,stock:200,status:'正常'},
+        {product:'原醋500ml',cat:'醋',wh:'储备库',open:80,purchase:300,soldQty:150,stock:230,status:'正常'},
+        {product:'酱油1.8L',cat:'酱油',wh:'中心库',open:30,purchase:100,soldQty:60,stock:70,status:'正常'},
+        {product:'洗涤盐1kg',cat:'洗涤盐',wh:'储备库',open:20,purchase:50,soldQty:0,stock:70,status:'呆滞积压'},
+      ]
+    }
+  },
+  updatedAt: Date.now(),
+  roomId: 'DEMO'
+};
+
+// 使用演示数据初始化
+const S = JSON.parse(JSON.stringify(DEMO_DATA));
+const LS = 'inv_dashboard_v1_demo';
+const STAFFS = [...new Set(DEMO_DATA.periods['2026-01'].sales.map(s=>s.sales))];
+const PRODUCTS = [...new Set(DEMO_DATA.periods['2026-01'].sales.map(s=>s.product))];
+
+// 简化版 app.js 渲染逻辑
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('loader').style.display='none';
+  initTabs();
+  renderAll();
+});
+
+function initTabs() {
+  document.querySelectorAll('[data-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+      document.querySelectorAll('[data-tab]').forEach(b=>b.classList.remove('on'));
+      document.getElementById('tab-'+btn.dataset.tab).classList.add('on');
+      btn.classList.add('on');
+    });
+  });
+}
+
+function cur() { return S.periods['2026-01']; }
+
+function N(v) { return parseFloat(String(v).replace(/[,，\s]/g,'')) || 0; }
+
+function renderAll() {
+  try { renderOverview(); } catch(e) { console.error(e); }
+  try { renderStock(); } catch(e) { console.error(e); }
+  try { renderSales(); } catch(e) { console.error(e); }
+  try { renderStaff(); } catch(e) { console.error(e); }
+  try { renderForecast(); } catch(e) { console.error(e); }
+  try { renderYear(); } catch(e) { console.error(e); }
+}
+
+function renderOverview() {
+  const p = cur();
+  const totalQty = p.sales.reduce((s,v)=>s+N(v.qty),0);
+  const totalAmt = p.sales.reduce((s,v)=>s+N(v.amount),0);
+  const cats = [...new Set(p.stock.map(s=>s.cat))];
+  document.getElementById('kpis').innerHTML = `
+    <div class="kpi"><div class="kv">${N(totalQty).toFixed(0)}</div><div class="kl">总销量(件)</div></div>
+    <div class="kpi"><div class="kv">¥${(N(totalAmt)/10000).toFixed(1)}万</div><div class="kl">总金额(元)</div></div>
+    <div class="kpi"><div class="kv">${cats.length}</div><div class="kl">品类数</div></div>
+    <div class="kpi"><div class="kv">${STAFFS.length}</div><div class="kl">业务员</div></div>`;
+  
+  // 饼图
+  const catQty = {};
+  p.sales.forEach(s=>{ catQty[s.cat||'其他'] = (catQty[s.cat||'其他']||0)+N(s.qty); });
+  new Chart(document.getElementById('chCatPie'), {
+    type:'doughnut',
+    data:{labels:Object.keys(catQty), datasets:[{data:Object.values(catQty),backgroundColor:['#4af','#ff9800','#2196f3','#9c27b0','#f44336','#00bcd4']]}]}
+  });
+  
+  // PSI对比
+  const psi = {};
+  p.stock.forEach(s=>{ psi[s.cat] = psi[s.cat]||{p:0,s:0,o:0}; psi[s.cat].p+=N(s.purchase); psi[s.cat].s+=N(s.soldQty); psi[s.cat].o+=N(s.stock); });
+  const keys = Object.keys(psi);
+  new Chart(document.getElementById('chPSI'), {
+    type:'bar',
+    data:{
+      labels:keys,
+      datasets:[
+        {label:'购进',data:keys.map(k=>psi[k].p),backgroundColor:'#4af'},
+        {label:'销售',data:keys.map(k=>psi[k].s),backgroundColor:'#ff9800'},
+        {label:'库存',data:keys.map(k=>psi[k].o),backgroundColor:'#9c27b0'}
+      ]
+    },
+    options:{responsive:true, plugins:{legend:{position:'top'}}}
+  });
+  
+  // 销量趋势
+  const daily = {};
+  p.sales.forEach(s=>{ daily[s.date]= (daily[s.date]||0)+N(s.qty); });
+  const dates = Object.keys(daily).sort();
+  new Chart(document.getElementById('chDaily'), {
+    type:'line',
+    data:{labels:dates, datasets:[{label:'日销量',data:dates.map(d=>daily[d]),borderColor:'#4af',tension:0.3,fill:false}]},
+    options:{responsive:true}
+  });
+  
+  // 业务员排行
+  const staffQty = {};
+  p.sales.forEach(s=>{ staffQty[s.sales]= (staffQty[s.sales]||0)+N(s.qty); });
+  const sKeys = Object.keys(staffQty).sort((a,b)=>staffQty[b]-staffQty[a]);
+  new Chart(document.getElementById('chStaff'), {
+    type:'bar',
+    data:{labels:sKeys, datasets:[{label:'销量',data:sKeys.map(k=>staffQty[k]),backgroundColor:'#2196f3'}]},
+    options:{indexAxis:'y', responsive:true}
+  });
+  
+  // 预警
+  const warns = p.stock.filter(s=>s.status!=='正常');
+  document.getElementById('warnCount').textContent = warns.length;
+  document.getElementById('tbWarnTop').outerHTML = mkTable([
+    ['商品','分类','仓库','现存','状态'],
+    ...warns.map(w=>[w.product,w.cat,w.wh,w.stock,w.status])
+  ], 'tbWarnTop');
+}
+
+function renderStock() {
+  const p = cur();
+  const statusColors = {'正常':'#4caf50','低于安全库存':'#ff9800','断货/缺货':'#f44336','呆滞积压':'#9e9e9e'};
+  document.getElementById('tbStock').outerHTML = mkTable([
+    ['商品','分类','仓库','期初','购进','销售','现存','状态'],
+    ...p.stock.map(s=>[
+      s.product, s.cat, s.wh,
+      s.open, s.purchase, s.soldQty, s.stock,
+      `<span style="color:${statusColors[s.status]||'#333'}">${s.status}</span>`
+    ])
+  ], 'tbStock');
+  
+  // 仓库分布
+  const whQty = {};
+  p.stock.forEach(s=>{ whQty[s.wh]= (whQty[s.wh]||0)+N(s.stock); });
+  new Chart(document.getElementById('chWh'), {
+    type:'pie',
+    data:{labels:Object.keys(whQty), datasets:[{data:Object.values(whQty),backgroundColor:['#4af','#ff9800','#2196f3']}]}
+  });
+  
+  // 库存变化
+  const top15 = [...p.stock].sort((a,b)=>N(b.stock)-N(a.stock)).slice(0,15);
+  new Chart(document.getElementById('chStockFlow'), {
+    type:'bar',
+    data:{
+      labels:top15.map(s=>s.product.slice(0,8)),
+      datasets:[
+        {label:'期初',data:top15.map(s=>N(s.open)),backgroundColor:'#bbb'},
+        {label:'购进',data:top15.map(s=>N(s.purchase)),backgroundColor:'#4af'},
+        {label:'销售',data:top15.map(s=>N(s.soldQty)),backgroundColor:'#ff9800'},
+        {label:'现存',data:top15.map(s=>N(s.stock)),backgroundColor:'#9c27b0'}
+      ]
+    },
+    options:{responsive:true}
+  });
+}
+
+function renderSales() {
+  const p = cur();
+  const totalQty = p.sales.reduce((s,v)=>s+N(v.qty),0);
+  const totalAmt = p.sales.reduce((s,v)=>s+N(v.amount),0);
+  document.getElementById('kpisSales').innerHTML = `
+    <div class="kpi"><div class="kv">${N(totalQty).toFixed(0)}</div><div class="kl">总销量</div></div>
+    <div class="kpi"><div class="kv">¥${(N(totalAmt)).toFixed(0)}</div><div class="kl">总金额</div></div>
+    <div class="kpi"><div class="kv">${p.salesSummary.length}</div><div class="kl">商品数</div></div>`;
+  
+  const catQty = {};
+  p.salesSummary.forEach(s=>{ catQty[s.cat||'其他']=(catQty[s.cat]||0)+N(s.qty); });
+  const catKeys = Object.keys(catQty).sort((a,b)=>catQty[b]-catQty[a]);
+  new Chart(document.getElementById('chSalesCat'), {
+    type:'bar',
+    data:{labels:catKeys, datasets:[{label:'销量',data:catKeys.map(k=>catQty[k]),backgroundColor:'#2196f3'}]},
+    options:{indexAxis:'y', responsive:true}
+  });
+  
+  const top10 = [...p.salesSummary].sort((a,b)=>N(b.qty)-N(a.qty)).slice(0,10);
+  new Chart(document.getElementById('chSalesTop'), {
+    type:'bar',
+    data:{labels:top10.map(s=>s.product.slice(0,8)), datasets:[{label:'销量',data:top10.map(s=>N(s.qty)),backgroundColor:'#4af'}]},
+    options:{indexAxis:'y', responsive:true}
+  });
+  
+  document.getElementById('tbSalesSum').outerHTML = mkTable([
+    ['商品','分类','销量','金额','业务员','分类来源'],
+    ...p.salesSummary.map(s=>[s.product,s.cat,N(s.qty).toFixed(1),'¥'+N(s.amount).toFixed(2),s.sales,s.catSource||'—'])
+  ], 'tbSalesSum');
+}
+
+function renderStaff() {
+  const p = cur();
+  const totalQty = p.sales.reduce((s,v)=>s+N(v.qty),0);
+  const totalAmt = p.sales.reduce((s,v)=>s+N(v.amount),0);
+  document.getElementById('kpisStaff').innerHTML = `
+    <div class="kpi"><div class="kv">${STAFFS.length}</div><div class="kl">业务员数</div></div>
+    <div class="kpi"><div class="kv">${N(totalQty).toFixed(0)}</div><div class="kl">总销量</div></div>
+    <div class="kpi"><div class="kv">¥${(N(totalAmt)).toFixed(0)}</div><div class="kl">总金额</div></div>`;
+  
+  const staffQty = {};
+  p.sales.forEach(s=>{ staffQty[s.sales]=(staffQty[s.sales]||0)+N(s.qty); });
+  const sKeys = Object.keys(staffQty).sort((a,b)=>staffQty[b]-staffQty[a]);
+  new Chart(document.getElementById('chStaffAmt'), {
+    type:'bar',
+    data:{labels:sKeys, datasets:[{label:'销量',data:sKeys.map(k=>staffQty[k]),backgroundColor:'#2196f3'}]},
+    options:{indexAxis:'y', responsive:true}
+  });
+  
+  const staffProd = {};
+  STAFFS.forEach(sf=>{ staffProd[sf]={}; p.sales.filter(s=>s.sales===sf).forEach(s=>{ staffProd[sf][s.product]=(staffProd[sf][s.product]||0)+N(s.qty); }); });
+  const prods = [...new Set(p.sales.map(s=>s.product))];
+  new Chart(document.getElementById('chStaffProd'), {
+    type:'bar',
+    data:{
+      labels:STAFFS,
+      datasets: prods.map((pr,i)=>({
+        label:pr.slice(0,8),
+        data:STAFFS.map(sf=>staffProd[sf][pr]||0),
+        backgroundColor:['#4af','#ff9800','#2196f3','#9c27b0','#f44336','#00bcd4'][i%6]
+      }))
+    },
+    options:{responsive:true}
+  });
+  
+  document.getElementById('ledgerCount').textContent = p.sales.length;
+  document.getElementById('tbLedger').outerHTML = mkTable([
+    ['日期','商品','规格','数量','金额','业务员','客户'],
+    ...p.sales.map(s=>[s.date,s.product,s.spec,N(s.qty),'¥'+N(s.amount).toFixed(0),s.sales,s.customer])
+  ], 'tbLedger');
+}
+
+function renderForecast() {
+  const p = cur();
+  const totalQty = p.sales.reduce((s,v)=>s+N(v.qty),0);
+  const fc = Math.round(N(totalQty)*1.1);
+  document.getElementById('kpisFc').innerHTML = `
+    <div class="kpi"><div class="kv">${N(totalQty).toFixed(0)}</div><div class="kl">本期销量</div></div>
+    <div class="kpi"><div class="kv">${fc}</div><div class="kl">下月预测(+10%)</div></div>
+    <div class="kpi"><div class="kv">${p.salesSummary.length}</div><div class="kl">商品数</div></div>`;
+  
+  const top = [...p.salesSummary].sort((a,b)=>N(b.qty)-N(a.qty)).slice(0,8);
+  new Chart(document.getElementById('chFc'), {
+    type:'bar',
+    data:{
+      labels:top.map(s=>s.product.slice(0,8)),
+      datasets:[
+        {label:'本期',data:top.map(s=>N(s.qty)),backgroundColor:'#4af'},
+        {label:'预测',data:top.map(s=>Math.round(N(s.qty)*1.1)),backgroundColor:'#ff9800'}
+      ]
+    },
+    options:{responsive:true}
+  });
+  
+  document.getElementById('tbFc').outerHTML = mkTable([
+    ['商品','本期销量','预测销量','建议备货','备注'],
+    ...top.map(s=>[s.product,N(s.qty).toFixed(0),Math.round(N(s.qty)*1.1),Math.round(N(s.qty)*1.2),'参考历史趋势'])
+  ], 'tbFc');
+}
+
+function renderYear() {
+  const p = cur();
+  const totalQty = p.sales.reduce((s,v)=>s+N(v.qty),0);
+  const totalAmt = p.sales.reduce((s,v)=>s+N(v.amount),0);
+  document.getElementById('kpisYear').innerHTML = `
+    <div class="kpi"><div class="kv">1</div><div class="kl">已录入期间</div></div>
+    <div class="kpi"><div class="kv">${N(totalQty).toFixed(0)}</div><div class="kl">总销量</div></div>
+    <div class="kpi"><div class="kv">¥${(N(totalAmt)).toFixed(0)}</div><div class="kl">总金额</div></div>`;
+  
+  const catQty = {};
+  p.salesSummary.forEach(s=>{ catQty[s.cat||'其他']=(catQty[s.cat||'其他']||0)+N(s.qty); });
+  const catKeys = Object.keys(catQty);
+  new Chart(document.getElementById('chYearCat'), {
+    type:'pie',
+    data:{labels:catKeys, datasets:[{data:Object.values(catQty),backgroundColor:['#4af','#ff9800','#2196f3','#9c27b0','#f44336','#00bcd4']}]}
+  });
+  
+  new Chart(document.getElementById('chYearTrend'), {
+    type:'line',
+    data:{
+      labels:['1月'],
+      datasets:[
+        {label:'销量',data:[N(totalQty)],borderColor:'#4af',tension:0.3},
+        {label:'金额(万)',data:[N(totalAmt)/10000],borderColor:'#ff9800',tension:0.3}
+      ]
+    },
+    options:{responsive:true}
+  });
+  
+  document.getElementById('tbYearProd').outerHTML = mkTable([
+    ['商品','分类','销量','金额','占比'],
+    ...[...p.salesSummary].sort((a,b)=>N(b.qty)-N(a.qty)).map(s=>[
+      s.product, s.cat, N(s.qty).toFixed(1), '¥'+N(s.amount).toFixed(0), (N(s.qty)/N(totalQty)*100).toFixed(1)+'%'
+    ])
+  ], 'tbYearProd');
+}
+
+function mkTable(headersAndRows, id) {
+  const [headers, ...rows] = headersAndRows;
+  return `<table id="${id}">
+    <thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>
+  </table>`;
+}
+</script>
+</body>
+</html>
